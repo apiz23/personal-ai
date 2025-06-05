@@ -37,6 +37,7 @@ class ChatResponse(BaseModel):
     response: str
 class NoteResponse(BaseModel):
     description: str
+    extracted_text: str 
 
 # ─── ROOT ───────────────────────────────────────────────────────────────────────
 @app.get("/")
@@ -67,24 +68,26 @@ async def chat(req: ChatRequest):
 # ─── NOTES EXTRACTION ENDPOINT ─────────────────────────────────────────────────
 VALID_EXT = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 
+# ─── ENDPOINT ───────────────────────────────────────────────────────────────
 @app.post("/extract-notes", response_model=NoteResponse)
 async def extract_notes(file: UploadFile = File(...)):
-    # Validate ext
     ext = Path(file.filename).suffix.lower()
     if ext not in VALID_EXT:
-        raise HTTPException(400, f"Unsupported file type. Allowed: {', '.join(VALID_EXT)}")
+        raise HTTPException(
+            400, f"Unsupported file type. Allowed: {', '.join(VALID_EXT)}"
+        )
 
     tmp_path = None
     try:
-        # Save to temp file
+        # simpan fail sementara
         with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
             tmp.write(await file.read())
             tmp_path = tmp.name
 
-        # Upload to JamAI (notes project)
+        # upload ke JamAI
         file_resp = jamai_notes.file.upload_file(tmp_path)
 
-        # Add row to action table and fetch description
+        # proses di action table
         tbl_resp = jamai_notes.table.add_table_rows(
             table_type=p.TableType.action,
             request=p.RowAddRequest(
@@ -93,8 +96,14 @@ async def extract_notes(file: UploadFile = File(...)):
                 stream=False,
             ),
         )
-        desc = tbl_resp.rows[0].columns["description"].text
-        return {"description": desc}
+
+        # ambil hasil
+        cols = tbl_resp.rows[0].columns
+        description = cols["description"].text if "description" in cols else ""
+        # sesuaikan nama kolum di JamAI kalau lain
+        extracted_text = cols["extracted_text"].text if "extracted_text" in cols else ""
+
+        return {"description": description, "extracted_text": extracted_text}
 
     except Exception as err:
         log.exception("Extract-notes error")
