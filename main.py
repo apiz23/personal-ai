@@ -69,7 +69,7 @@ async def chat(req: ChatRequest):
 VALID_EXT = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 
 # ─── ENDPOINT ───────────────────────────────────────────────────────────────
-@app.post("/extract-notes", response_model=NoteResponse)
+@app.post("/extract-data", response_model=NoteResponse)
 async def extract_notes(file: UploadFile = File(...)):
     ext = Path(file.filename).suffix.lower()
     if ext not in VALID_EXT:
@@ -91,7 +91,7 @@ async def extract_notes(file: UploadFile = File(...)):
         tbl_resp = jamai_notes.table.add_table_rows(
             table_type=p.TableType.action,
             request=p.RowAddRequest(
-                table_id="notes-extraction",
+                table_id="extract-data",
                 data=[{"img": file_resp.uri}],
                 stream=False,
             ),
