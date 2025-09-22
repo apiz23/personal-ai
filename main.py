@@ -4,7 +4,8 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 from jamaibase import JamAI, protocol as p
 from pathlib import Path
-import tempfile, os, logging
+import os
+import logging
 import PyPDF2
 
 # ─── ENV ────────────────────────────────────────────────────────────────────────
@@ -31,7 +32,8 @@ app = FastAPI(title="Hafizu Assistant API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], allow_credentials=True,
-    allow_methods=["*"], allow_headers=["*"]
+    allow_methods=["*"],
+    allow_headers=["*"]
 )
 
 # ─── MODELS ─────────────────────────────────────────────────────────────────────
@@ -64,19 +66,17 @@ async def api_hello():
 @app.post("/hafizu-blog/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):
     try:
-        full = ""
-        for chunk in jamai_chat.table.add_table_rows(
+        tbl_resp = jamai_chat.table.add_table_rows(
             table_type=p.TableType.chat,
             request=p.RowAddRequest(
                 table_id="hafizu-assistant",
                 data=[{"User": req.message}],
-                stream=True,
+                stream=False  # ← Vercel-safe
             ),
-        ):
-            if isinstance(chunk, p.GenTableStreamChatCompletionChunk) and \
-               chunk.output_column_name == "AI":
-                full += chunk.choices[0].message.content
-        return {"response": full}
+        )
+        ai_col = tbl_resp.rows[0].columns.get("AI")
+        full_response = ai_col.text if hasattr(ai_col, "text") else str(ai_col)
+        return {"response": full_response}
     except Exception as err:
         log.exception("Chat error")
         raise HTTPException(status_code=500, detail=str(err))
@@ -92,14 +92,9 @@ async def extract_notes(file: UploadFile = File(...)):
             status_code=400,
             detail=f"Unsupported file type. Allowed: {', '.join(VALID_IMG_EXT)}"
         )
-
-    tmp_path = None
     try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-            tmp.write(await file.read())
-            tmp_path = tmp.name
-
-        file_resp = jamai_notes.file.upload_file(tmp_path)
+        file_bytes = await file.read()
+        file_resp = jamai_notes.file.upload_bytes(file_bytes, filename=file.filename)
 
         tbl_resp = jamai_notes.table.add_table_rows(
             table_type=p.TableType.action,
@@ -109,19 +104,13 @@ async def extract_notes(file: UploadFile = File(...)):
                 stream=False,
             ),
         )
-
         cols = tbl_resp.rows[0].columns
         description = cols.get("description", type('obj', (), {'text': ''})()).text
         extracted_text = cols.get("extracted_text", type('obj', (), {'text': ''})()).text
-
         return {"description": description, "extracted_text": extracted_text}
-
     except Exception as err:
         log.exception("Extract-notes error")
         raise HTTPException(status_code=500, detail=str(err))
-    finally:
-        if tmp_path and os.path.exists(tmp_path):
-            os.remove(tmp_path)
 
 # ─── PDF EXTRACTION ENDPOINT ───────────────────────────────────────────────────
 PDF_VALID_EXT = {".pdf"}
@@ -134,20 +123,17 @@ async def extract_pdf(file: UploadFile = File(...)):
             status_code=400,
             detail="Unsupported file type. Only PDF files are allowed."
         )
-
-    tmp_path = None
     try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-            tmp.write(await file.read())
-            tmp_path = tmp.name
+        file_bytes = await file.read()
+        from io import BytesIO
+        pdf_file = BytesIO(file_bytes)
 
         extracted_text = ""
-        with open(tmp_path, "rb") as pdf_file:
-            pdf_reader = PyPDF2.PdfReader(pdf_file)
-            for page in pdf_reader.pages:
-                text = page.extract_text()
-                if text:
-                    extracted_text += text + "\n"
+        pdf_reader = PyPDF2.PdfReader(pdf_file)
+        for page in pdf_reader.pages:
+            text = page.extract_text()
+            if text:
+                extracted_text += text + "\n"
 
         if not extracted_text.strip():
             raise HTTPException(
@@ -175,10 +161,6 @@ async def extract_pdf(file: UploadFile = File(...)):
     except Exception as err:
         log.exception("Extract-pdf error")
         raise HTTPException(status_code=500, detail=str(err))
-    finally:
-        if tmp_path and os.path.exists(tmp_path):
-            os.remove(tmp_path)
 
 # ─── VERCEL HANDLER ─────────────────────────────────────────────────────────────
-# This is required for Vercel
 handler = app
