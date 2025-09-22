@@ -1,18 +1,18 @@
-# Gunakan Python slim
-FROM python:3.11-slim
+# Use official Python slim image
+FROM python:3.12-slim
 
-# Working directory
+# Set working directory
 WORKDIR /app
 
-# Copy requirements & install
+# Install dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy code
+# Copy app code
 COPY . .
 
-# Set PORT env (Fly.io will map)
-ENV PORT=8080
+# Expose port 8080 (Fly.io default)
+EXPOSE 8080
 
-# Start FastAPI
-CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8080"]
+# Run FastAPI with Uvicorn
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
