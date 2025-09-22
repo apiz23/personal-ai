@@ -5,6 +5,8 @@ from dotenv import load_dotenv
 from jamaibase import JamAI, protocol as p
 from pathlib import Path
 import tempfile, os, logging
+import PyPDF2
+import io
 
 # ─── ENV ────────────────────────────────────────────────────────────────────────
 load_dotenv()
@@ -69,7 +71,7 @@ async def chat(req: ChatRequest):
 VALID_EXT = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 
 # ─── ENDPOINT ───────────────────────────────────────────────────────────────
-@app.post("/extract-data", response_model=NoteResponse)
+@app.post("/studai/extract-img", response_model=NoteResponse)
 async def extract_notes(file: UploadFile = File(...)):
     ext = Path(file.filename).suffix.lower()
     if ext not in VALID_EXT:
@@ -91,7 +93,7 @@ async def extract_notes(file: UploadFile = File(...)):
         tbl_resp = jamai_notes.table.add_table_rows(
             table_type=p.TableType.action,
             request=p.RowAddRequest(
-                table_id="extract-data",
+                table_id="extract-img",
                 data=[{"img": file_resp.uri}],
                 stream=False,
             ),
@@ -107,6 +109,70 @@ async def extract_notes(file: UploadFile = File(...)):
 
     except Exception as err:
         log.exception("Extract-notes error")
+        raise HTTPException(500, str(err))
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+class PdfResponse(BaseModel):
+    flashcard_front: str
+    flashcard_back: str
+    definitions: str
+    formulas: str
+
+PDF_VALID_EXT = {".pdf"}
+
+@app.post("/studai/extract-pdf", response_model=PdfResponse)
+async def extract_pdf_alt(file: UploadFile = File(...)):
+    ext = Path(file.filename).suffix.lower()
+    if ext not in PDF_VALID_EXT:
+        raise HTTPException(
+            400, f"Unsupported file type. Only PDF files are allowed."
+        )
+    
+    tmp_path = None
+    try:
+        # Save file temporarily
+        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+            tmp.write(await file.read())
+            tmp_path = tmp.name
+        
+        # Extract text from PDF
+        with open(tmp_path, 'rb') as pdf_file:
+            pdf_reader = PyPDF2.PdfReader(pdf_file)
+            extracted_text = ""
+            for page in pdf_reader.pages:
+                extracted_text += page.extract_text() + "\n"
+        
+        if not extracted_text.strip():
+            raise HTTPException(400, "Could not extract text from PDF. The PDF might be image-based or encrypted.")
+        
+        # Send to JamAI as text
+        tbl_resp = jamai_notes.table.add_table_rows(
+            table_type=p.TableType.action,
+            request=p.RowAddRequest(
+                table_id="extract-pdf",
+                data=[{"document_text": extracted_text}],
+                stream=False,
+            ),
+        )
+        
+        # Get results
+        cols = tbl_resp.rows[0].columns
+        flashcard_front = cols["flashcard_front"].text if "flashcard_front" in cols else ""
+        flashcard_back = cols["flashcard_back"].text if "flashcard_back" in cols else ""
+        definitions = cols["definitions"].text if "definitions" in cols else ""
+        formulas = cols["formulas"].text if "formulas" in cols else ""
+        
+        return {
+            "flashcard_front": flashcard_front,
+            "flashcard_back": flashcard_back,
+            "definitions": definitions,
+            "formulas": formulas,
+        }
+        
+    except Exception as err:
+        log.exception("Extract-pdf error")
         raise HTTPException(500, str(err))
     finally:
         if tmp_path and os.path.exists(tmp_path):
