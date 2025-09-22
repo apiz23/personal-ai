@@ -5,3 +5,4 @@ python-dotenv
 jamaibase
 python-multipart
 httpx
+PyPDF2

@@ -1,18 +1,14 @@
 {
-	"builds": [
-		{
-			"src": "main.py",
-			"use": "@vercel/python",
-			"config": {
-				"buildCommand": "pip install -r requirements.txt",
-				"startCommand": "uvicorn main:app --host 0.0.0.0 --port $PORT"
-			}
-		}
-	],
-	"routes": [
-		{
-			"src": "/(.*)",
-			"dest": "main.py"
-		}
-	]
+    "builds": [
+        {
+            "src": "main.py",
+            "use": "@vercel/python"
+        }
+    ],
+    "routes": [
+        {
+            "src": "/(.*)",
+            "dest": "main.py"
+        }
+    ]
 }
