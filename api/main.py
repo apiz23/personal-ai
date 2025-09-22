@@ -56,6 +56,10 @@ class PdfResponse(BaseModel):
 async def hello():
     return {"message": "Hello, welcome to the Hafizu Assistant AI!"}
 
+@app.get("/api")
+async def api_hello():
+    return {"message": "Hello, welcome to the Hafizu Assistant AI!"}
+
 # ─── CHAT ENDPOINT ─────────────────────────────────────────────────────────────
 @app.post("/hafizu-blog/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):
@@ -172,3 +176,7 @@ async def extract_pdf(file: UploadFile = File(...)):
     finally:
         if tmp_path and os.path.exists(tmp_path):
             os.remove(tmp_path)
+
+# ─── VERCEL HANDLER ─────────────────────────────────────────────────────────────
+# This is required for Vercel
+handler = app
