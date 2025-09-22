@@ -7,6 +7,7 @@ from pathlib import Path
 import os
 import logging
 import PyPDF2
+import tempfile
 
 # ─── ENV ────────────────────────────────────────────────────────────────────────
 load_dotenv()
@@ -81,80 +82,112 @@ async def chat(req: ChatRequest):
         raise HTTPException(status_code=500, detail=str(err))
 
 # ─── NOTES EXTRACTION ENDPOINT ─────────────────────────────────────────────────
-VALID_IMG_EXT = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+VALID_EXT = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 
+# ─── ENDPOINT ───────────────────────────────────────────────────────────────
 @app.post("/studai/extract-img", response_model=NoteResponse)
 async def extract_notes(file: UploadFile = File(...)):
     ext = Path(file.filename).suffix.lower()
-    if ext not in VALID_IMG_EXT:
+    if ext not in VALID_EXT:
         raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported file type. Allowed: {', '.join(VALID_IMG_EXT)}"
+            400, f"Unsupported file type. Allowed: {', '.join(VALID_EXT)}"
         )
-    try:
-        file_bytes = await file.read()
-        file_resp = jamai_notes.file.upload_bytes(file_bytes, filename=file.filename)
 
+    tmp_path = None
+    try:
+        # simpan fail sementara
+        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+            tmp.write(await file.read())
+            tmp_path = tmp.name
+
+        # upload ke JamAI
+        file_resp = jamai_notes.file.upload_file(tmp_path)
+
+        # proses di action table
         tbl_resp = jamai_notes.table.add_table_rows(
             table_type=p.TableType.action,
             request=p.RowAddRequest(
                 table_id="extract-img",
                 data=[{"img": file_resp.uri}],
+                stream=False,
             ),
         )
+
+        # ambil hasil
         cols = tbl_resp.rows[0].columns
-        description = cols.get("description", type('obj', (), {'text': ''})()).text
-        extracted_text = cols.get("extracted_text", type('obj', (), {'text': ''})()).text
+        description = cols["description"].text if "description" in cols else ""
+        # sesuaikan nama kolum di JamAI kalau lain
+        extracted_text = cols["extracted_text"].text if "extracted_text" in cols else ""
+
         return {"description": description, "extracted_text": extracted_text}
+
     except Exception as err:
         log.exception("Extract-notes error")
-        raise HTTPException(status_code=500, detail=str(err))
+        raise HTTPException(500, str(err))
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.remove(tmp_path)
 
-# ─── PDF EXTRACTION ENDPOINT ───────────────────────────────────────────────────
+class PdfResponse(BaseModel):
+    flashcard_front: str
+    flashcard_back: str
+    definitions: str
+    formulas: str
+
 PDF_VALID_EXT = {".pdf"}
 
 @app.post("/studai/extract-pdf", response_model=PdfResponse)
-async def extract_pdf(file: UploadFile = File(...)):
+async def extract_pdf_alt(file: UploadFile = File(...)):
     ext = Path(file.filename).suffix.lower()
     if ext not in PDF_VALID_EXT:
         raise HTTPException(
-            status_code=400,
-            detail="Unsupported file type. Only PDF files are allowed."
+            400, f"Unsupported file type. Only PDF files are allowed."
         )
+    
+    tmp_path = None
     try:
-        file_bytes = await file.read()
-        from io import BytesIO
-        pdf_file = BytesIO(file_bytes)
-
-        extracted_text = ""
-        pdf_reader = PyPDF2.PdfReader(pdf_file)
-        for page in pdf_reader.pages:
-            text = page.extract_text()
-            if text:
-                extracted_text += text + "\n"
-
+        # Save file temporarily
+        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+            tmp.write(await file.read())
+            tmp_path = tmp.name
+        
+        # Extract text from PDF
+        with open(tmp_path, 'rb') as pdf_file:
+            pdf_reader = PyPDF2.PdfReader(pdf_file)
+            extracted_text = ""
+            for page in pdf_reader.pages:
+                extracted_text += page.extract_text() + "\n"
+        
         if not extracted_text.strip():
-            raise HTTPException(
-                status_code=400,
-                detail="Could not extract text from PDF. The PDF might be image-based or encrypted."
-            )
-
+            raise HTTPException(400, "Could not extract text from PDF. The PDF might be image-based or encrypted.")
+        
+        # Send to JamAI as text
         tbl_resp = jamai_notes.table.add_table_rows(
             table_type=p.TableType.action,
             request=p.RowAddRequest(
                 table_id="extract-pdf",
                 data=[{"document_text": extracted_text}],
+                stream=False,
             ),
         )
-
+        
+        # Get results
         cols = tbl_resp.rows[0].columns
-        return PdfResponse(
-            flashcard_front=cols.get("flashcard_front", type('obj', (), {'text': ''})()).text,
-            flashcard_back=cols.get("flashcard_back", type('obj', (), {'text': ''})()).text,
-            definitions=cols.get("definitions", type('obj', (), {'text': ''})()).text,
-            formulas=cols.get("formulas", type('obj', (), {'text': ''})()).text,
-        )
-
+        flashcard_front = cols["flashcard_front"].text if "flashcard_front" in cols else ""
+        flashcard_back = cols["flashcard_back"].text if "flashcard_back" in cols else ""
+        definitions = cols["definitions"].text if "definitions" in cols else ""
+        formulas = cols["formulas"].text if "formulas" in cols else ""
+        
+        return {
+            "flashcard_front": flashcard_front,
+            "flashcard_back": flashcard_back,
+            "definitions": definitions,
+            "formulas": formulas,
+        }
+        
     except Exception as err:
         log.exception("Extract-pdf error")
-        raise HTTPException(status_code=500, detail=str(err))
+        raise HTTPException(500, str(err))
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.remove(tmp_path)
