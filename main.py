@@ -1,162 +1,160 @@
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-from jamaibase import JamAI, protocol as p
-import time
-import os
-from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from dotenv import load_dotenv
+from jamaibase import JamAI, protocol as p
+from pathlib import Path
+import os
+import logging
+import PyPDF2
 
-# Load environment variables
+# ─── ENV ────────────────────────────────────────────────────────────────────────
 load_dotenv()
 
-# Configuration
-PROJECT_ID = "proj_043e7a98a1a2fb9b967db88f"
+CHAT_PROJECT_ID = "proj_220f5118642fc87b23616090"
+NOTES_PROJECT_ID = "proj_16251a55cf8ddf5518f2cc21"
 PAT = "jamai_sk_99da212896c49785b4000524de0104e1fd6a63e5cbf0e1f1"
-TABLE_TYPE_CHAT = p.TableType.chat
-TABLE_TYPE_ACTION = p.TableType.action
-OPENER = "Hello! How can I help you today?"
 
-# Initialize FastAPI app
-app = FastAPI()
+if not all([CHAT_PROJECT_ID, NOTES_PROJECT_ID, PAT]):
+    raise EnvironmentError("Missing environment variables for JamAI credentials!")
 
-# Add CORS middleware
+# ─── LOGGER ─────────────────────────────────────────────────────────────────────
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger("hafizu-api")
+
+# ─── JAMAI CLIENTS ─────────────────────────────────────────────────────────────
+jamai_chat = JamAI(project_id=CHAT_PROJECT_ID, token=PAT)
+jamai_notes = JamAI(project_id=NOTES_PROJECT_ID, token=PAT)
+
+# ─── FASTAPI ────────────────────────────────────────────────────────────────────
+app = FastAPI(title="Hafizu Assistant API")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=["*"], allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["*"]
 )
 
-# Initialize JamAI client
-jamai = JamAI(project_id=PROJECT_ID, token=PAT)
-
-@app.get("/")
-async def hello():
-    """Returns a simple greeting."""
-    return {"message": "Hello, welcome to the Health Sync API!"}
-
-# Chat session management
-chat_sessions = {}
-
-# Create a new chat session
-def create_new_chat():
-    """Creates a new chat session and returns the table ID."""
-    timestamp = int(time.time())
-    new_table_id = f"Chat_{timestamp}"
-    try:
-        jamai.table.duplicate_table(
-            table_type=TABLE_TYPE_CHAT,
-            table_id_src="SyncMate",
-            table_id_dst=new_table_id,
-            include_data=True,
-            create_as_child=True
-        )
-        return new_table_id
-    except Exception as e:
-        return None
-
-# Define models for chat
+# ─── MODELS ─────────────────────────────────────────────────────────────────────
 class ChatRequest(BaseModel):
-    session_id: str
     message: str
 
 class ChatResponse(BaseModel):
     response: str
 
-# Define models for symptom analysis
-class SymptomsRequest(BaseModel):
-    symptoms: str
+class NoteResponse(BaseModel):
+    description: str
+    extracted_text: str
 
-class SymptomsResponse(BaseModel):
-    possible_disease: str
-    confidence_level: str
-    suggested_action: str
+class PdfResponse(BaseModel):
+    flashcard_front: str
+    flashcard_back: str
+    definitions: str
+    formulas: str
 
-# Chat endpoint
-@app.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest):
-    """Handles chat requests from the frontend."""
-    session_id = request.session_id
-    message = request.message
+# ─── ROOT ───────────────────────────────────────────────────────────────────────
+@app.get("/")
+async def hello():
+    return {"message": "Hello, welcome to the Hafizu Assistant AI!"}
 
-    # Create a new chat session if it doesn't exist
-    if session_id not in chat_sessions:
-        table_id = create_new_chat()
-        if not table_id:
-            raise HTTPException(status_code=500, detail="Error creating new chat session")
-        chat_sessions[session_id] = table_id
+@app.get("/api")
+async def api_hello():
+    return {"message": "Hello, welcome to the Hafizu Assistant AI!"}
 
-    table_id = chat_sessions[session_id]
-
-    full_response = ""
+# ─── CHAT ENDPOINT ─────────────────────────────────────────────────────────────
+@app.post("/hafizu-blog/chat", response_model=ChatResponse)
+async def chat(req: ChatRequest):
     try:
-        for chunk in jamai.table.add_table_rows(
-            table_type=TABLE_TYPE_CHAT,
+        tbl_resp = jamai_chat.table.add_table_rows(
+            table_type=p.TableType.chat,
             request=p.RowAddRequest(
-                table_id=table_id,
-                data=[{"User": message}],
-                stream=True
+                table_id="hafizu-assistant",
+                data=[{"User": req.message}],
+            ),
+        )
+        ai_col = tbl_resp.rows[0].columns.get("AI")
+        full_response = ai_col.text if hasattr(ai_col, "text") else str(ai_col)
+        return {"response": full_response}
+    except Exception as err:
+        log.exception("Chat error")
+        raise HTTPException(status_code=500, detail=str(err))
+
+# ─── NOTES EXTRACTION ENDPOINT ─────────────────────────────────────────────────
+VALID_IMG_EXT = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+
+@app.post("/studai/extract-img", response_model=NoteResponse)
+async def extract_notes(file: UploadFile = File(...)):
+    ext = Path(file.filename).suffix.lower()
+    if ext not in VALID_IMG_EXT:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type. Allowed: {', '.join(VALID_IMG_EXT)}"
+        )
+    try:
+        file_bytes = await file.read()
+        file_resp = jamai_notes.file.upload_bytes(file_bytes, filename=file.filename)
+
+        tbl_resp = jamai_notes.table.add_table_rows(
+            table_type=p.TableType.action,
+            request=p.RowAddRequest(
+                table_id="extract-img",
+                data=[{"img": file_resp.uri}],
+            ),
+        )
+        cols = tbl_resp.rows[0].columns
+        description = cols.get("description", type('obj', (), {'text': ''})()).text
+        extracted_text = cols.get("extracted_text", type('obj', (), {'text': ''})()).text
+        return {"description": description, "extracted_text": extracted_text}
+    except Exception as err:
+        log.exception("Extract-notes error")
+        raise HTTPException(status_code=500, detail=str(err))
+
+# ─── PDF EXTRACTION ENDPOINT ───────────────────────────────────────────────────
+PDF_VALID_EXT = {".pdf"}
+
+@app.post("/studai/extract-pdf", response_model=PdfResponse)
+async def extract_pdf(file: UploadFile = File(...)):
+    ext = Path(file.filename).suffix.lower()
+    if ext not in PDF_VALID_EXT:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported file type. Only PDF files are allowed."
+        )
+    try:
+        file_bytes = await file.read()
+        from io import BytesIO
+        pdf_file = BytesIO(file_bytes)
+
+        extracted_text = ""
+        pdf_reader = PyPDF2.PdfReader(pdf_file)
+        for page in pdf_reader.pages:
+            text = page.extract_text()
+            if text:
+                extracted_text += text + "\n"
+
+        if not extracted_text.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="Could not extract text from PDF. The PDF might be image-based or encrypted."
             )
-        ):
-            if isinstance(chunk, p.GenTableStreamChatCompletionChunk):
-                if chunk.output_column_name == 'AI':
-                    full_response += chunk.choices[0].message.content
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
-    return {"response": full_response}
-
-# Symptom analysis endpoint
-@app.post("/analyze", response_model=SymptomsResponse)
-async def analyze_symptoms(request: SymptomsRequest):
-    """Handles symptom analysis requests."""
-    try:
-        if not request.symptoms.strip():
-            raise ValueError("Symptoms must be a non-empty string.")
-
-        print(f"Analyzing symptoms: {request.symptoms}")
-
-        response = jamai.table.add_table_rows(
-            table_type=TABLE_TYPE_ACTION,
+        tbl_resp = jamai_notes.table.add_table_rows(
+            table_type=p.TableType.action,
             request=p.RowAddRequest(
-                table_id="medical_analysis",
-                data=[{"analyze_symptoms": request.symptoms}],
-                stream=False,
+                table_id="extract-pdf",
+                data=[{"document_text": extracted_text}],
             ),
         )
 
-        # print("Response:", response)
-        # print("Type of Response:", type(response))
-        # print("Attributes of Response:", dir(response))
-
-        if isinstance(response, tuple):
-            result = response[0]
-        else:
-            result = response
-
-        if hasattr(result, 'rows') and result.rows:
-            row = result.rows[0]
-            if hasattr(row, 'columns') and row.columns:
-                possible_disease = row.columns.get("possible_disease")
-                confidence_level = row.columns.get("confidence_level")
-                suggested_action = row.columns.get("suggested_action")
-
-                # Convert to strings if necessary
-                possible_disease = possible_disease.text if hasattr(possible_disease, "text") else str(possible_disease)
-                confidence_level = confidence_level.text if hasattr(confidence_level, "text") else str(confidence_level)
-                suggested_action = suggested_action.text if hasattr(suggested_action, "text") else str(suggested_action)
-
-            else:
-                raise ValueError("Unexpected response format: 'columns' attribute not found.")
-        else:
-            raise ValueError("Unexpected response format: 'rows' attribute not found or empty.")
-
-        return SymptomsResponse(
-            possible_disease=possible_disease,
-            confidence_level=confidence_level,
-            suggested_action=suggested_action,
+        cols = tbl_resp.rows[0].columns
+        return PdfResponse(
+            flashcard_front=cols.get("flashcard_front", type('obj', (), {'text': ''})()).text,
+            flashcard_back=cols.get("flashcard_back", type('obj', (), {'text': ''})()).text,
+            definitions=cols.get("definitions", type('obj', (), {'text': ''})()).text,
+            formulas=cols.get("formulas", type('obj', (), {'text': ''})()).text,
         )
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as err:
+        log.exception("Extract-pdf error")
+        raise HTTPException(status_code=500, detail=str(err))
