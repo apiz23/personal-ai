@@ -10,9 +10,9 @@ import PyPDF2
 # ─── ENV ────────────────────────────────────────────────────────────────────────
 load_dotenv()
 
-CHAT_PROJECT_ID = os.getenv("CHAT_PROJECT_ID")
-NOTES_PROJECT_ID = os.getenv("NOTES_PROJECT_ID")
-PAT = os.getenv("PAT")
+CHAT_PROJECT_ID = "proj_220f5118642fc87b23616090"
+NOTES_PROJECT_ID = "proj_16251a55cf8ddf5518f2cc21"
+PAT = "jamai_sk_99da212896c49785b4000524de0104e1fd6a63e5cbf0e1f1"
 
 if not all([CHAT_PROJECT_ID, NOTES_PROJECT_ID, PAT]):
     raise EnvironmentError("Missing environment variables for JamAI credentials!")
@@ -89,7 +89,8 @@ async def extract_notes(file: UploadFile = File(...)):
     ext = Path(file.filename).suffix.lower()
     if ext not in VALID_IMG_EXT:
         raise HTTPException(
-            status_code=400, detail=f"Unsupported file type. Allowed: {', '.join(VALID_IMG_EXT)}"
+            status_code=400,
+            detail=f"Unsupported file type. Allowed: {', '.join(VALID_IMG_EXT)}"
         )
 
     tmp_path = None
@@ -130,7 +131,8 @@ async def extract_pdf(file: UploadFile = File(...)):
     ext = Path(file.filename).suffix.lower()
     if ext not in PDF_VALID_EXT:
         raise HTTPException(
-            status_code=400, detail="Unsupported file type. Only PDF files are allowed."
+            status_code=400,
+            detail="Unsupported file type. Only PDF files are allowed."
         )
 
     tmp_path = None
@@ -149,7 +151,7 @@ async def extract_pdf(file: UploadFile = File(...)):
 
         if not extracted_text.strip():
             raise HTTPException(
-                status_code=400, 
+                status_code=400,
                 detail="Could not extract text from PDF. The PDF might be image-based or encrypted."
             )
 
