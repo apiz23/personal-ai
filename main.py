@@ -128,14 +128,15 @@ async def extract_notes(file: UploadFile = File(...)):
         if tmp_path and os.path.exists(tmp_path):
             os.remove(tmp_path)
 
+# ─── RESPONSE MODEL ─────────────────────────────────────────────────────────────
 class PdfResponse(BaseModel):
     flashcard_front: str
     flashcard_back: str
-    definitions: str
-    formulas: str
+    key_points: str
 
 PDF_VALID_EXT = {".pdf"}
 
+# ─── ENDPOINT ───────────────────────────────────────────────────────────────────
 @app.post("/studai/extract-pdf", response_model=PdfResponse)
 async def extract_pdf_alt(file: UploadFile = File(...)):
     ext = Path(file.filename).suffix.lower()
@@ -143,24 +144,27 @@ async def extract_pdf_alt(file: UploadFile = File(...)):
         raise HTTPException(
             400, f"Unsupported file type. Only PDF files are allowed."
         )
-    
+
     tmp_path = None
     try:
         # Save file temporarily
         with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
             tmp.write(await file.read())
             tmp_path = tmp.name
-        
+
         # Extract text from PDF
-        with open(tmp_path, 'rb') as pdf_file:
+        with open(tmp_path, "rb") as pdf_file:
             pdf_reader = PyPDF2.PdfReader(pdf_file)
             extracted_text = ""
             for page in pdf_reader.pages:
                 extracted_text += page.extract_text() + "\n"
-        
+
         if not extracted_text.strip():
-            raise HTTPException(400, "Could not extract text from PDF. The PDF might be image-based or encrypted.")
-        
+            raise HTTPException(
+                400,
+                "Could not extract text from PDF. The PDF might be image-based or encrypted.",
+            )
+
         # Send to JamAI as text
         tbl_resp = jamai_notes.table.add_table_rows(
             table_type=p.TableType.action,
@@ -170,21 +174,19 @@ async def extract_pdf_alt(file: UploadFile = File(...)):
                 stream=False,
             ),
         )
-        
+
         # Get results
         cols = tbl_resp.rows[0].columns
-        flashcard_front = cols["flashcard_front"].text if "flashcard_front" in cols else ""
-        flashcard_back = cols["flashcard_back"].text if "flashcard_back" in cols else ""
-        definitions = cols["definitions"].text if "definitions" in cols else ""
-        formulas = cols["formulas"].text if "formulas" in cols else ""
-        
-        return {
-            "flashcard_front": flashcard_front,
-            "flashcard_back": flashcard_back,
-            "definitions": definitions,
-            "formulas": formulas,
-        }
-        
+        flashcard_front = cols.get("flashcard_front", {}).text if "flashcard_front" in cols else ""
+        flashcard_back = cols.get("flashcard_back", {}).text if "flashcard_back" in cols else ""
+        key_points = cols.get("key_points", {}).text if "key_points" in cols else ""
+
+        return PdfResponse(
+            flashcard_front=flashcard_front,
+            flashcard_back=flashcard_back,
+            key_points=key_points,
+        )
+
     except Exception as err:
         log.exception("Extract-pdf error")
         raise HTTPException(500, str(err))
